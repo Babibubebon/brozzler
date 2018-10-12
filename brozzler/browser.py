@@ -348,7 +348,11 @@ class Browser:
             self.send_to_chrome(
                 method='Network.setBlockedURLs',
                 params={'urls': ['*google-analytics.com/analytics.js',
-                                 '*google-analytics.com/ga.js']}
+                                 '*google-analytics.com/ga.js',
+                                 '*googletagmanager.com/gtag/js*',
+                                 '*doubleclick.net*',
+                                 '*yjtag.jp/tag.js',
+                                 'https://syndication.twitter.com/i/jot/syndication*']}
                 )
 
     def stop(self):
