@@ -352,7 +352,8 @@ class Browser:
                                  '*googletagmanager.com/gtag/js*',
                                  '*doubleclick.net*',
                                  '*yjtag.jp/tag.js',
-                                 'https://syndication.twitter.com/i/jot/syndication*']}
+                                 'https://syndication.twitter.com/i/jot/syndication*',
+                                 'https://cdn.syndication.twimg.com/timeline/profile*']}
                 )
 
     def stop(self):
