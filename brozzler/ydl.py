@@ -326,9 +326,10 @@ def _try_youtube_dl(worker, ydl, site, page):
             logging.info(
                     "sending WARCPROX_WRITE_RECORD request to warcprox "
                     "with youtube-dl json for %s", page)
+            schema, rest = str(urlcanon.semantic(page.url)).split('://', 1)
             worker._warcprox_write_record(
                     warcprox_address=worker._proxy_for(site),
-                    url="youtube-dl:%s" % str(urlcanon.semantic(page.url)),
+                    url="metadata://%s" % rest,
                     warc_type="metadata",
                     content_type="application/vnd.youtube-dl_formats+json;charset=utf-8",
                     payload=info_json.encode("utf-8"),
