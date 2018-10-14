@@ -223,6 +223,8 @@ class BrozzlerWorker:
         return outlinks
 
     def _browse_page(self, browser, site, page, on_screenshot=None, on_request=None):
+        outlinks = set()
+
         def _on_screenshot(screenshot_png):
             if on_screenshot:
                 on_screenshot(screenshot_png)
@@ -271,22 +273,31 @@ class BrozzlerWorker:
                     page.videos = []
                 page.videos.append(video)
 
+        def _on_frame_navigated(chrome_msg):
+            if ('params' in chrome_msg and 'frame' in chrome_msg['params']
+                    # only child frame
+                    and 'parentId' in chrome_msg['params']['frame']):
+                self.logger.debug('add child frame url to outlinks: %s', chrome_msg['params']['frame']['url'])
+                outlinks.add(chrome_msg['params']['frame']['url'])
+
         if not browser.is_running():
             browser.start(
                     proxy=self._proxy_for(site),
                     cookie_db=site.get('cookie_db'))
-        final_page_url, outlinks = browser.browse_page(
+        final_page_url, browser_outlinks = browser.browse_page(
                 page.url, extra_headers=site.extra_headers(),
                 behavior_parameters=site.get('behavior_parameters'),
                 username=site.get('username'), password=site.get('password'),
                 user_agent=site.get('user_agent'),
                 on_screenshot=_on_screenshot, on_response=_on_response,
-                on_request=on_request, hashtags=page.hashtags,
+                on_request=on_request, on_frame_navigated=_on_frame_navigated,
+                hashtags=page.hashtags,
                 skip_extract_outlinks=self._skip_extract_outlinks,
                 skip_visit_hashtags=self._skip_visit_hashtags,
                 skip_youtube_dl=self._skip_youtube_dl,
                 page_timeout=self._page_timeout,
                 behavior_timeout=self._behavior_timeout)
+        outlinks.update(browser_outlinks)
         if final_page_url != page.url:
             page.note_redirect(final_page_url)
         return outlinks
