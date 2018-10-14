@@ -41,6 +41,9 @@ class NoBrowsersAvailable(Exception):
 class BrowsingTimeout(BrowsingException):
     pass
 
+class BrowsingFrameChanged(BrowsingException):
+    pass
+
 class BrowserPool:
     '''
     Manages pool of browsers. Automatically chooses available port for the
@@ -148,10 +151,12 @@ class WebsockReceiverThread(threading.Thread):
 
         self.is_open = False
         self.got_page_load_event = None
+        self.navigated_frame = None
         self.reached_limit = None
 
         self.on_request = None
         self.on_response = None
+        self.on_frame_navigated = None
 
         self._result_messages = {}
 
@@ -259,6 +264,13 @@ class WebsockReceiverThread(threading.Thread):
                     and 'params' in message and 'errorText' in message['params']
                     and message['params']['errorText'] == 'net::ERR_PROXY_CONNECTION_FAILED'):
                 brozzler.thread_raise(self.calling_thread, brozzler.ProxyError)
+            elif (message['method'] == 'Page.frameNavigated'):
+                if self.on_frame_navigated:
+                    self.on_frame_navigated(message)
+                if 'parentId' not in message['params']['frame']:
+                    # don't store child frames
+                    self.navigated_frame = message['params']['frame']
+                self.logger.debug("Page.frameNavigated %s", message['params']['frame'])
             # else:
             #     self.logger.debug("%s %s", message["method"], json_message)
         elif 'result' in message:
@@ -289,6 +301,7 @@ class Browser:
         self.is_browsing = False
         self._command_id = Counter()
         self._wait_interval = 0.5
+        self.navigating_frame = None
 
     def __enter__(self):
         self.start()
@@ -297,7 +310,7 @@ class Browser:
     def __exit__(self, *args):
         self.stop()
 
-    def _wait_for(self, callback, timeout=None):
+    def _wait_for(self, callback, timeout=None, skip_detect_redirection=False):
         '''
         Spins until callback() returns truthy.
         '''
@@ -311,6 +324,9 @@ class Browser:
                         'timed out after %.1fs waiting for: %s' % (
                             elapsed, callback))
             brozzler.sleep(self._wait_interval)
+            if not skip_detect_redirection and \
+                    self.navigating_frame and self.navigating_frame['url'] != self.websock_thread.navigated_frame['url']:
+                raise BrowsingFrameChanged()
 
     def send_to_chrome(self, suppress_logging=False, **kwargs):
         msg_id = next(self._command_id)
@@ -398,7 +414,7 @@ class Browser:
     def browse_page(
             self, page_url, extra_headers=None,
             user_agent=None, behavior_parameters=None, behaviors_dir=None,
-            on_request=None, on_response=None, on_screenshot=None,
+            on_request=None, on_response=None, on_screenshot=None, on_frame_navigated=None,
             username=None, password=None, hashtags=None,
             skip_extract_outlinks=False, skip_visit_hashtags=False,
             skip_youtube_dl=False, page_timeout=300, behavior_timeout=900):
@@ -429,6 +445,8 @@ class Browser:
                 takes one argument, the the raw jpeg bytes (default None)
                 # XXX takes two arguments, the url of the page at the time the
                 # screenshot was taken, and the raw jpeg bytes (default None)
+            on_frame_navigated: callback to invoke when frame is navigated,
+                takes one argument, the json-decoded message (default None)
 
         Returns:
             A tuple (final_page_url, outlinks).
@@ -447,10 +465,13 @@ class Browser:
         if self.is_browsing:
             raise BrowsingException('browser is already busy browsing a page')
         self.is_browsing = True
+        self.navigating_frame = None
         if on_request:
             self.websock_thread.on_request = on_request
         if on_response:
             self.websock_thread.on_response = on_response
+        if on_frame_navigated:
+            self.websock_thread.on_frame_navigated = on_frame_navigated
         try:
             with brozzler.thread_accept_exceptions():
                 self.configure_browser(
@@ -465,18 +486,24 @@ class Browser:
                             'login navigated away from %s; returning!',
                             page_url)
                         self.navigate_to_page(page_url, timeout=page_timeout)
-                if on_screenshot:
-                    self._try_screenshot(on_screenshot)
-                behavior_script = brozzler.behavior_script(
+                try:
+                    if on_screenshot:
+                        self._try_screenshot(on_screenshot)
+                    if skip_extract_outlinks:
+                        outlinks = []
+                    else:
+                        outlinks = self.extract_outlinks()
+                    behavior_script = brozzler.behavior_script(
                         page_url, behavior_parameters,
                         behaviors_dir=behaviors_dir)
-                self.run_behavior(behavior_script, timeout=behavior_timeout)
-                if skip_extract_outlinks:
-                    outlinks = []
-                else:
-                    outlinks = self.extract_outlinks()
-                if not skip_visit_hashtags:
-                    self.visit_hashtags(self.url(), hashtags, outlinks)
+                    self.run_behavior(behavior_script, timeout=behavior_timeout)
+                    if not skip_extract_outlinks:
+                        # retry extract_outlinks and append
+                        outlinks = outlinks.union(self.extract_outlinks())
+                    if not skip_visit_hashtags:
+                        self.visit_hashtags(self.url(), hashtags, outlinks)
+                except BrowsingFrameChanged:
+                    pass
                 final_page_url = self.url()
                 return final_page_url, outlinks
         except brozzler.ReachedLimit:
@@ -540,11 +567,12 @@ class Browser:
 
     def navigate_to_page(self, page_url, timeout=300):
         self.logger.info('navigating to page %s', page_url)
-        self.websock_thread.got_page_load_event = None
+        self.websock_thread.navigated_frame = None
         self.send_to_chrome(method='Page.navigate', params={'url': page_url})
         self._wait_for(
-                lambda: self.websock_thread.got_page_load_event,
+                lambda: self.websock_thread.navigated_frame,
                 timeout=timeout)
+        self.navigating_frame = self.websock_thread.navigated_frame
 
     def extract_outlinks(self, timeout=60):
         self.logger.info('extracting outlinks')
@@ -583,17 +611,9 @@ class Browser:
 
     def url(self, timeout=30):
         '''
-        Returns value of document.URL from the browser.
+        Returns Frame document's URL
         '''
-        self.websock_thread.expect_result(self._command_id.peek())
-        msg_id = self.send_to_chrome(
-                method='Runtime.evaluate',
-                params={'expression': 'document.URL'})
-        self._wait_for(
-                lambda: self.websock_thread.received_result(msg_id),
-                timeout=timeout)
-        message = self.websock_thread.pop_result(msg_id)
-        return message['result']['result']['value']
+        return self.websock_thread.navigated_frame['url']
 
     def run_behavior(self, behavior_script, timeout=900):
         self.send_to_chrome(
@@ -608,7 +628,7 @@ class Browser:
                         'behavior reached hard timeout after %.1fs', elapsed)
                 return
 
-            brozzler.sleep(7)
+            brozzler.sleep(5)
 
             self.websock_thread.expect_result(self._command_id.peek())
             msg_id = self.send_to_chrome(
@@ -650,7 +670,7 @@ class Browser:
             try:
                 self._wait_for(
                         lambda: self.websock_thread.received_result(msg_id),
-                        timeout=5)
+                        timeout=5, skip_detect_redirection=True)
                 msg = self.websock_thread.pop_result(msg_id)
                 if (msg and 'result' in msg
                         and 'result' in msg['result']):
