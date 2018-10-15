@@ -133,9 +133,9 @@ class UmbraBehavior {
         // since some urls are requsted only on
         // this event - see
         // https://webarchive.jira.com/browse/AITFIVE-451
-        var mouseOverEvent = document.createEvent("Events");
-        mouseOverEvent.initEvent("mouseover", true, false);
-        target.dispatchEvent(mouseOverEvent);
+        this.dispatchMouseEvent(target, "mouseover");
+        this.dispatchMouseEvent(target, "mousedown");
+        this.dispatchMouseEvent(target, "mouseup");
 
         if (action == "click") {
             target.click();
@@ -143,6 +143,12 @@ class UmbraBehavior {
 
         this.alreadyDone.push(target);
         this.idleSince = null;
+    }
+
+    dispatchMouseEvent(elem, type) {
+        var clickEvent = document.createEvent("MouseEvents");
+        clickEvent.initEvent(type, true, false);
+        elem.dispatchEvent(clickEvent);
     }
 
     start() {
