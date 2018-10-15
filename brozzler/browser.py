@@ -157,6 +157,7 @@ class WebsockReceiverThread(threading.Thread):
         self.on_request = None
         self.on_response = None
         self.on_frame_navigated = None
+        self.on_window_open = None
 
         self._result_messages = {}
 
@@ -264,13 +265,16 @@ class WebsockReceiverThread(threading.Thread):
                     and 'params' in message and 'errorText' in message['params']
                     and message['params']['errorText'] == 'net::ERR_PROXY_CONNECTION_FAILED'):
                 brozzler.thread_raise(self.calling_thread, brozzler.ProxyError)
-            elif (message['method'] == 'Page.frameNavigated'):
+            elif message['method'] == 'Page.frameNavigated':
                 if self.on_frame_navigated:
                     self.on_frame_navigated(message)
                 if 'parentId' not in message['params']['frame']:
                     # don't store child frames
                     self.navigated_frame = message['params']['frame']
                 self.logger.debug("Page.frameNavigated %s", message['params']['frame'])
+            elif message['method'] == 'Page.windowOpen':
+                if self.on_window_open:
+                    self.on_window_open(message)
             # else:
             #     self.logger.debug("%s %s", message["method"], json_message)
         elif 'result' in message:
@@ -414,7 +418,8 @@ class Browser:
     def browse_page(
             self, page_url, extra_headers=None,
             user_agent=None, behavior_parameters=None, behaviors_dir=None,
-            on_request=None, on_response=None, on_screenshot=None, on_frame_navigated=None,
+            on_request=None, on_response=None, on_screenshot=None,
+            on_frame_navigated=None, on_window_open=None,
             username=None, password=None, hashtags=None,
             skip_extract_outlinks=False, skip_visit_hashtags=False,
             skip_youtube_dl=False, page_timeout=300, behavior_timeout=900):
@@ -447,6 +452,8 @@ class Browser:
                 # screenshot was taken, and the raw jpeg bytes (default None)
             on_frame_navigated: callback to invoke when frame is navigated,
                 takes one argument, the json-decoded message (default None)
+            on_window_open: callback to invoke when new window is opened,
+                takes one argument, the json-decoded message (default None)
 
         Returns:
             A tuple (final_page_url, outlinks).
@@ -466,12 +473,17 @@ class Browser:
             raise BrowsingException('browser is already busy browsing a page')
         self.is_browsing = True
         self.navigating_frame = None
+        outlinks = set()
+
         if on_request:
             self.websock_thread.on_request = on_request
         if on_response:
             self.websock_thread.on_response = on_response
         if on_frame_navigated:
             self.websock_thread.on_frame_navigated = on_frame_navigated
+        if on_window_open:
+            self.websock_thread.on_window_open = on_window_open
+
         try:
             with brozzler.thread_accept_exceptions():
                 self.configure_browser(
@@ -489,17 +501,15 @@ class Browser:
                 try:
                     if on_screenshot:
                         self._try_screenshot(on_screenshot)
-                    if skip_extract_outlinks:
-                        outlinks = []
-                    else:
-                        outlinks = self.extract_outlinks()
+                    if not skip_extract_outlinks:
+                        outlinks.update(self.extract_outlinks())
                     behavior_script = brozzler.behavior_script(
                         page_url, behavior_parameters,
                         behaviors_dir=behaviors_dir)
                     self.run_behavior(behavior_script, timeout=behavior_timeout)
                     if not skip_extract_outlinks:
                         # retry extract_outlinks and append
-                        outlinks = outlinks.union(self.extract_outlinks())
+                        outlinks.update(self.extract_outlinks())
                     if not skip_visit_hashtags:
                         self.visit_hashtags(self.url(), hashtags, outlinks)
                 except BrowsingFrameChanged:

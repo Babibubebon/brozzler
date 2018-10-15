@@ -280,6 +280,10 @@ class BrozzlerWorker:
                 self.logger.debug('add child frame url to outlinks: %s', chrome_msg['params']['frame']['url'])
                 outlinks.add(chrome_msg['params']['frame']['url'])
 
+        def _on_window_open(chrome_msg):
+            if 'params' in chrome_msg and 'url' in chrome_msg['params']:
+                outlinks.add(chrome_msg['params']['url'])
+
         if not browser.is_running():
             browser.start(
                     proxy=self._proxy_for(site),
@@ -291,7 +295,7 @@ class BrozzlerWorker:
                 user_agent=site.get('user_agent'),
                 on_screenshot=_on_screenshot, on_response=_on_response,
                 on_request=on_request, on_frame_navigated=_on_frame_navigated,
-                hashtags=page.hashtags,
+                on_window_open=_on_window_open, hashtags=page.hashtags,
                 skip_extract_outlinks=self._skip_extract_outlinks,
                 skip_visit_hashtags=self._skip_visit_hashtags,
                 skip_youtube_dl=self._skip_youtube_dl,
